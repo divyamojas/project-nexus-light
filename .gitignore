@@ -1,0 +1,30 @@
+# ─── Next.js ─────────────────────────────────────────────────────────────────
+.next/
+out/
+
+# ─── Dependencies ────────────────────────────────────────────────────────────
+node_modules/
+
+# ─── Secrets ─────────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+lib/testAccounts.js
+
+# ─── next-pwa generated service worker ───────────────────────────────────────
+/public/sw.js
+/public/sw.js.map
+/public/workbox-*.js
+/public/workbox-*.js.map
+
+# ─── Build / cache ───────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+.cache/
+.turbo/
+
+# ─── IDE ─────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.sw?
+.DS_Store
