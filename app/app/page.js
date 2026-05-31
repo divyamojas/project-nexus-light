@@ -178,8 +178,10 @@ function DashboardContent() {
     }
   }
 
-  const lentLoans = loans.filter(l => l.lender_id === profile?.id && l.status === 'active')
-  const borrowedLoans = loans.filter(l => l.borrower_id === profile?.id && l.status === 'active')
+  const libraryBorrows = loans.filter(l => l.borrower_id === profile?.id && l.status === 'active' && l.book_source === 'library')
+  const p2pLoans = loans.filter(l => l.book_source !== 'library')
+  const lentLoans = p2pLoans.filter(l => l.lender_id === profile?.id && l.status === 'active')
+  const borrowedLoans = p2pLoans.filter(l => l.borrower_id === profile?.id && l.status === 'active')
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-10">
@@ -330,6 +332,20 @@ function DashboardContent() {
         </section>
       )}
 
+      {/* Library Borrows */}
+      {libraryBorrows.length > 0 && (
+        <section>
+          <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200 mb-4">
+            Library Borrows
+          </h2>
+          <div className="space-y-3">
+            {libraryBorrows.map(loan => (
+              <LibraryLoanCard key={loan.id} loan={loan} toast={toast} onRefresh={fetchLoans} />
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Active Loans */}
       {(lentLoans.length > 0 || borrowedLoans.length > 0) && (
         <section>
@@ -400,6 +416,46 @@ function DashboardContent() {
           </button>
         </div>
       </section>
+    </div>
+  )
+}
+
+function LibraryLoanCard({ loan, toast, onRefresh }) {
+  const [loading, setLoading] = useState(false)
+
+  async function returnToLibrary() {
+    setLoading(true)
+    try {
+      await apiFetch('/returns', {
+        method: 'POST',
+        body: JSON.stringify({ book_id: loan.book_id }),
+      })
+      toast({ message: 'Returned to library!', type: 'success' })
+      onRefresh()
+    } catch (err) {
+      toast({ message: err.message || 'Failed to return', type: 'error' })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="card p-3 flex items-center justify-between gap-3 border-l-2 border-cyan-400 dark:border-cyan-600">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">
+          {loan.title || 'Untitled'}
+        </p>
+        <p className="text-xs text-stone-500 dark:text-slate-400">
+          📍 {loan.library_location || loan.library_name || 'Office Library'} · Borrowed {formatDate(loan.loaned_at)}
+        </p>
+      </div>
+      <button
+        onClick={returnToLibrary}
+        disabled={loading}
+        className="text-xs text-cyan-600 dark:text-cyan-400 hover:underline flex-shrink-0 disabled:opacity-50 whitespace-nowrap"
+      >
+        {loading ? 'Returning…' : 'Return to Library'}
+      </button>
     </div>
   )
 }
