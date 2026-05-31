@@ -1,12 +1,11 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { login, signup, resetPassword } from '../../lib/auth.js'
 import { useToast } from '../../components/Toast.js'
 import { useAuth } from '../../components/AuthProvider.js'
-import { TEST_ACCOUNTS, ROLE_STYLES } from '../../lib/testAccounts.js'
 
 const ALLOWED_DOMAINS = ['sprinklr.com', 'gmail.com']
 
@@ -42,19 +41,8 @@ export default function AuthPage() {
   const [loading, setLoading] = useState(false)
   const [signupDone, setSignupDone] = useState(false)
   const [resetDone, setResetDone] = useState(false)
-  const [showDevMenu, setShowDevMenu] = useState(false)
-  const hideTimerRef = useRef(null)
 
-  function openMenu() {
-    clearTimeout(hideTimerRef.current)
-    setShowDevMenu(true)
-  }
-  function closeMenu() {
-    hideTimerRef.current = setTimeout(() => setShowDevMenu(false), 120)
-  }
-
-  async function performLogin(loginEmail, loginPassword) {
-    await login(loginEmail, loginPassword)
+  async function afterLogin() {
     const profile = await refreshProfile()
     if (!profile) {
       router.replace('/onboarding')
@@ -74,30 +62,10 @@ export default function AuthPage() {
     }
     setLoading(true)
     try {
-      await performLogin(email.trim(), password)
+      await login(email.trim(), password)
+      await afterLogin()
     } catch (err) {
       let message = 'Login failed'
-      try {
-        const parsed = JSON.parse(err.message)
-        message = parsed.detail || parsed.message || message
-      } catch {
-        message = err.message || message
-      }
-      toast({ message, type: 'error' })
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function loginAs(account) {
-    setShowDevMenu(false)
-    setEmail(account.email)
-    setPassword(account.password)
-    setLoading(true)
-    try {
-      await performLogin(account.email, account.password)
-    } catch (err) {
-      let message = `Login failed for ${account.label}`
       try {
         const parsed = JSON.parse(err.message)
         message = parsed.detail || parsed.message || message
@@ -126,8 +94,7 @@ export default function AuthPage() {
     setLoading(true)
     try {
       await signup(email.trim(), password)
-      // Email confirmation is disabled — log in immediately after signup
-      await performLogin(email.trim(), password)
+      setSignupDone(true)
     } catch (err) {
       let message = 'Signup failed'
       try {
@@ -239,44 +206,6 @@ export default function AuthPage() {
                 {loading ? 'Signing in…' : 'Sign In'}
               </button>
 
-              {/* Dev quick-login */}
-              <div className="relative" onMouseEnter={openMenu} onMouseLeave={closeMenu}>
-                <button
-                  type="button"
-                  className="w-full py-2 px-4 rounded-lg border border-dashed border-stone-300 dark:border-slate-600 text-xs text-stone-400 dark:text-slate-500 hover:border-stone-400 dark:hover:border-slate-500 hover:text-stone-500 dark:hover:text-slate-400 transition-colors flex items-center justify-between"
-                >
-                  <span>Quick login as…</span>
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={`w-3.5 h-3.5 transition-transform ${showDevMenu ? 'rotate-180' : ''}`}>
-                    <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
-                  </svg>
-                </button>
-                {showDevMenu && (
-                  <div
-                    className="absolute bottom-full mb-1.5 left-0 right-0 bg-white dark:bg-slate-800 border border-stone-200 dark:border-slate-700 rounded-xl shadow-lg overflow-y-auto max-h-72 z-20"
-                    onMouseEnter={openMenu}
-                    onMouseLeave={closeMenu}
-                  >
-                    {TEST_ACCOUNTS.map(account => (
-                      <button
-                        key={account.email}
-                        type="button"
-                        onClick={() => loginAs(account)}
-                        disabled={loading}
-                        className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-stone-50 dark:hover:bg-slate-700/60 transition-colors text-left disabled:opacity-50"
-                      >
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">{account.label}</p>
-                          <p className="text-xs text-stone-400 dark:text-slate-500 truncate">{account.email}</p>
-                        </div>
-                        <span className={`ml-3 flex-shrink-0 text-xs font-medium px-2 py-0.5 rounded-full ${ROLE_STYLES[account.role]}`}>
-                          {account.note}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
               <button
                 onClick={() => { setView('reset'); setResetDone(false) }}
                 className="text-sm text-emerald-600 dark:text-emerald-400 hover:underline text-center"
@@ -329,7 +258,6 @@ export default function AuthPage() {
               <button onClick={handleSignup} disabled={loading} className="btn-primary w-full mt-1">
                 {loading ? 'Creating account…' : 'Create Account'}
               </button>
-
             </div>
           )}
 

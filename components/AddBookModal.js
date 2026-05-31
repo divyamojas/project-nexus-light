@@ -2,13 +2,15 @@
 
 import { useState, useEffect } from 'react'
 import { apiFetch } from '../lib/api.js'
+import { addBookToLibrary } from '../lib/library.js'
 import { useDebounce } from '../hooks/useDebounce.js'
 import { useToast } from './Toast.js'
 
 const CONDITIONS = ['new', 'good', 'fair', 'worn']
 const CONDITION_LABELS = { new: 'New', good: 'Good', fair: 'Fair', worn: 'Worn' }
 
-export function AddBookModal({ onClose, onAdded }) {
+export function AddBookModal({ onClose, onAdded, libraryId = null }) {
+  const isLibraryMode = !!libraryId
   const { toast } = useToast()
   const [step, setStep] = useState('search') // search | catalog | manual
   const [query, setQuery] = useState('')
@@ -65,10 +67,12 @@ export function AddBookModal({ onClose, onAdded }) {
     if (!selected || !condition) return
     setSubmitting(true)
     try {
-      const book = await apiFetch('/books', {
-        method: 'POST',
-        body: JSON.stringify({ catalog_id: selected.id, condition }),
-      })
+      const book = isLibraryMode
+        ? await addBookToLibrary(libraryId, { catalog_id: selected.id, condition })
+        : await apiFetch('/books', {
+            method: 'POST',
+            body: JSON.stringify({ catalog_id: selected.id, condition }),
+          })
       toast({ message: 'Book added successfully!', type: 'success' })
       if (onAdded) onAdded(book)
       onClose()
@@ -86,7 +90,6 @@ export function AddBookModal({ onClose, onAdded }) {
     }
     setSubmitting(true)
     try {
-      // First create/find catalog entry
       const catalogEntry = await apiFetch('/catalog', {
         method: 'POST',
         body: JSON.stringify({
@@ -96,11 +99,12 @@ export function AddBookModal({ onClose, onAdded }) {
           ...(manual.cover_url.trim() ? { cover_url: manual.cover_url.trim() } : {}),
         }),
       })
-      // Then create book instance
-      const book = await apiFetch('/books', {
-        method: 'POST',
-        body: JSON.stringify({ catalog_id: catalogEntry.id, condition: manual.condition }),
-      })
+      const book = isLibraryMode
+        ? await addBookToLibrary(libraryId, { catalog_id: catalogEntry.id, condition: manual.condition })
+        : await apiFetch('/books', {
+            method: 'POST',
+            body: JSON.stringify({ catalog_id: catalogEntry.id, condition: manual.condition }),
+          })
       toast({ message: 'Book added successfully!', type: 'success' })
       if (onAdded) onAdded(book)
       onClose()
@@ -117,7 +121,9 @@ export function AddBookModal({ onClose, onAdded }) {
       <div className="relative bg-white dark:bg-slate-800 border border-stone-200 dark:border-slate-700 rounded-2xl shadow-xl max-w-lg w-full z-10">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-stone-200 dark:border-slate-700">
-          <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200">Add a Book</h2>
+          <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200">
+            {isLibraryMode ? 'Add Book to Library' : 'Add a Book'}
+          </h2>
           <button
             onClick={onClose}
             className="p-1.5 rounded-lg text-stone-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-stone-100 dark:hover:bg-slate-700 transition-colors"

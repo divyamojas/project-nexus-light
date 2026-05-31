@@ -66,14 +66,40 @@ export function BookCard({ book, onAction, currentUserId }) {
         <p className="text-stone-500 dark:text-slate-400 text-xs truncate">
           {catalog.author || 'Unknown author'}
         </p>
-        <div className="flex items-center gap-1.5 mt-0.5">
+        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
           <span className="badge-gray text-xs">{conditionLabel(book.condition)}</span>
+          {book.book_source === 'library' && (
+            <span className="text-xs bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400 px-2 py-0.5 rounded-full font-medium">
+              Library
+            </span>
+          )}
         </div>
+        {book.book_source === 'library' && book.library_location && (
+          <p className="text-xs text-stone-400 dark:text-slate-500 truncate mt-0.5">
+            📍 {book.library_location}
+          </p>
+        )}
       </div>
 
       {/* Actions */}
       <div className="flex flex-col gap-1.5 mt-auto">
-        {isOwner ? (
+        {book.book_source === 'library' ? (
+          <>
+            {isAvailable && !book.request_status && (
+              <button
+                onClick={() => handleAction(book.library_is_self_service ? 'pickup' : 'reserve')}
+                className="btn-primary text-xs py-1.5 px-3 w-full"
+              >
+                {book.library_is_self_service ? 'Pick Up' : 'Reserve'}
+              </button>
+            )}
+            {book.request_status && (
+              <span className="text-center text-xs text-stone-500 dark:text-slate-400 py-1">
+                Reserved: {book.request_status}
+              </span>
+            )}
+          </>
+        ) : isOwner ? (
           <>
             <button
               onClick={() => handleAction(book.archived ? 'unarchive' : 'archive')}
@@ -89,19 +115,21 @@ export function BookCard({ book, onAction, currentUserId }) {
             </button>
           </>
         ) : (
-          isAvailable && !book.request_status && (
-            <button
-              onClick={() => handleAction('request')}
-              className="btn-primary text-xs py-1.5 px-3 w-full"
-            >
-              Request Borrow
-            </button>
-          )
-        )}
-        {book.request_status && !isOwner && (
-          <span className="text-center text-xs text-stone-500 dark:text-slate-400 py-1">
-            Request: {book.request_status}
-          </span>
+          <>
+            {isAvailable && !book.request_status && (
+              <button
+                onClick={() => handleAction('request')}
+                className="btn-primary text-xs py-1.5 px-3 w-full"
+              >
+                Request Borrow
+              </button>
+            )}
+            {book.request_status && (
+              <span className="text-center text-xs text-stone-500 dark:text-slate-400 py-1">
+                Request: {book.request_status}
+              </span>
+            )}
+          </>
         )}
       </div>
     </div>
