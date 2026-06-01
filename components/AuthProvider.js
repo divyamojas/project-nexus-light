@@ -1,72 +1,61 @@
 'use client'
 
-import { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { createContext, useContext, useState } from 'react'
+import useSWR, { mutate as globalMutate } from 'swr'
 import { getToken, clearToken, login as authLogin, logout as authLogout, signup as authSignup, resetPassword as authReset } from '../lib/auth.js'
-import { apiFetch } from '../lib/api.js'
-import { cacheProfile, getCachedProfile, clearAll } from '../lib/storage.js'
+import { fetcher } from '../lib/fetcher.js'
+import { clearAll } from '../lib/storage.js'
 
 export const AuthContext = createContext(null)
 
-export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null)
-  const [profile, setProfile] = useState(null)
-  const [role, setRole] = useState('user')
-  const [loading, setLoading] = useState(true)
+export function AuthProvider({ children, initialProfile = null }) {
+  // activeSession tracks whether we should be fetching /users/me.
+  // Initialized from initialProfile (server already verified the token) so there
+  // is no client-side loading delay on first render.
+  const [activeSession, setActiveSession] = useState(!!initialProfile)
 
-  const loadProfile = useCallback(async () => {
-    const token = getToken()
-    if (!token) {
-      setLoading(false)
-      return
+  const { data: profile, mutate: mutateProfile } = useSWR(
+    activeSession ? '/users/me' : null,
+    fetcher,
+    {
+      fallbackData: initialProfile,
+      onError: (err) => {
+        const msg = err.message || ''
+        const isAuthError = msg.includes('401') || msg.includes('Unauthorized') ||
+                            msg.includes('404') || msg.includes('Profile not found')
+        if (isAuthError) {
+          clearToken()
+          setActiveSession(false)
+        }
+      },
     }
-    try {
-      // Load cached profile instantly
-      const cached = await getCachedProfile()
-      if (cached) {
-        setProfile(cached)
-        setRole(cached.role || 'user')
-      }
-      // Fetch fresh from backend
-      const data = await apiFetch('/users/me')
-      setProfile(data)
-      setRole(data.role || 'user')
-      setUser({ id: data.id, email: data.email || null })
-      await cacheProfile(data)
-    } catch (err) {
-      const msg = err.message || ''
-      const isUnauthed = msg.includes('401') || msg.includes('Unauthorized')
-      const isMissing  = msg.includes('Profile not found') || msg.includes('404')
-      if (isUnauthed || isMissing) {
-        clearToken()
-        setUser(null)
-        setProfile(null)
-        setRole('user')
-      }
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  )
 
-  useEffect(() => {
-    loadProfile()
-  }, [loadProfile])
+  const role = profile?.role || 'user'
+  const user = profile ? { id: profile.id, email: profile.email || null } : null
+  // loading is only true during the brief window after login() before profile arrives
+  const loading = activeSession && !profile
 
   async function login(email, password) {
     const data = await authLogin(email, password)
-    const profileData = await apiFetch('/users/me')
-    setProfile(profileData)
-    setRole(profileData.role || 'user')
-    setUser({ id: profileData.id, email: profileData.email || null })
-    await cacheProfile(profileData)
+    // Fetch profile directly — mutateProfile() can't work yet because activeSession is
+    // still false, so the SWR key is null. Pre-populate the cache, then activate.
+    let profileData = null
+    try {
+      profileData = await fetcher('/users/me')
+      await globalMutate('/users/me', profileData, { revalidate: false })
+    } catch {}
+    setActiveSession(true)
     return { data, profile: profileData }
   }
 
   async function logout() {
-    await authLogout()
+    try { await authLogout() } catch {}
+    clearToken()
+    setActiveSession(false)
     await clearAll()
-    setUser(null)
-    setProfile(null)
-    setRole('user')
+    // Clear all SWR cache so stale data doesn't leak to the next session
+    await globalMutate(() => true, undefined, { revalidate: false })
   }
 
   async function signup(email, password) {
@@ -78,17 +67,7 @@ export function AuthProvider({ children }) {
   }
 
   async function refreshProfile() {
-    try {
-      const data = await apiFetch('/users/me')
-      setProfile(data)
-      setRole(data.role || 'user')
-      setUser({ id: data.id, email: data.email || null })
-      await cacheProfile(data)
-      return data
-    } catch (err) {
-      console.error('[AuthProvider] refreshProfile error:', err)
-      return null
-    }
+    return mutateProfile()
   }
 
   const value = {

@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { login, signup, resetPassword } from '../../lib/auth.js'
+import { signup, resetPassword } from '../../lib/auth.js'
 import { useToast } from '../../components/Toast.js'
 import { useAuth } from '../../components/AuthProvider.js'
 
@@ -33,7 +33,7 @@ export default function AuthPage() {
   const [view, setView] = useState('login') // login | signup | reset
   const router = useRouter()
   const { toast } = useToast()
-  const { refreshProfile } = useAuth()
+  const { login } = useAuth()
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -42,19 +42,6 @@ export default function AuthPage() {
   const [signupDone, setSignupDone] = useState(false)
   const [resetDone, setResetDone] = useState(false)
 
-  async function afterLogin() {
-    const profile = await refreshProfile()
-    if (!profile) {
-      router.replace('/onboarding')
-      return
-    }
-    if (profile.approval_status === 'pending') {
-      router.replace('/pending')
-    } else {
-      router.replace('/app')
-    }
-  }
-
   async function handleLogin() {
     if (!email.trim() || !password) {
       toast({ message: 'Email and password are required', type: 'error' })
@@ -62,17 +49,18 @@ export default function AuthPage() {
     }
     setLoading(true)
     try {
-      await login(email.trim(), password)
-      await afterLogin()
-    } catch (err) {
-      let message = 'Login failed'
-      try {
-        const parsed = JSON.parse(err.message)
-        message = parsed.detail || parsed.message || message
-      } catch {
-        message = err.message || message
+      const { profile } = await login(email.trim(), password)
+      if (!profile) {
+        router.replace('/onboarding')
+      } else if (profile.approval_status === 'pending') {
+        router.replace('/pending')
+      } else {
+        router.replace('/app')
       }
-      toast({ message, type: 'error' })
+    } catch (err) {
+      let message = err.message || 'Login failed'
+      try { message = JSON.parse(err.message)?.detail || message } catch {}
+      toast({ message, type: 'error', detail: err.detail, status: err.status, apiUrl: err.apiUrl, apiMethod: err.apiMethod })
     } finally {
       setLoading(false)
     }
@@ -96,14 +84,9 @@ export default function AuthPage() {
       await signup(email.trim(), password)
       setSignupDone(true)
     } catch (err) {
-      let message = 'Signup failed'
-      try {
-        const parsed = JSON.parse(err.message)
-        message = parsed.detail || parsed.message || message
-      } catch {
-        message = err.message || message
-      }
-      toast({ message, type: 'error' })
+      let message = err.message || 'Signup failed'
+      try { message = JSON.parse(err.message)?.detail || message } catch {}
+      toast({ message, type: 'error', detail: err.detail, status: err.status, apiUrl: err.apiUrl, apiMethod: err.apiMethod })
     } finally {
       setLoading(false)
     }
