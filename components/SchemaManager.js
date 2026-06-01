@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useConfirm } from './ConfirmDialog.js'
 import {
   getSchemaSnapshot,
   refreshSchema,
@@ -24,6 +25,7 @@ export function SchemaManager({ toast }) {
   const [snapshot, setSnapshot] = useState(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const { requestConfirm, ConfirmDialogNode } = useConfirm()
 
   const loadSnapshot = useCallback(async () => {
     setLoading(true)
@@ -90,10 +92,11 @@ export function SchemaManager({ toast }) {
         </div>
       ) : (
         <>
-          {activeTab === 'Tables'       && <TablesPanel    snapshot={snapshot} toast={toast} onRefresh={loadSnapshot} />}
-          {activeTab === 'RLS Policies' && <RLSPanel       snapshot={snapshot} toast={toast} onRefresh={loadSnapshot} />}
-          {activeTab === 'Functions'    && <FunctionsPanel snapshot={snapshot} toast={toast} onRefresh={loadSnapshot} />}
+          {activeTab === 'Tables'       && <TablesPanel    snapshot={snapshot} toast={toast} onRefresh={loadSnapshot} requestConfirm={requestConfirm} />}
+          {activeTab === 'RLS Policies' && <RLSPanel       snapshot={snapshot} toast={toast} onRefresh={loadSnapshot} requestConfirm={requestConfirm} />}
+          {activeTab === 'Functions'    && <FunctionsPanel snapshot={snapshot} toast={toast} onRefresh={loadSnapshot} requestConfirm={requestConfirm} />}
           {activeTab === 'SQL Console'  && <SQLConsole     toast={toast} />}
+        {ConfirmDialogNode}
         </>
       )}
     </div>
@@ -116,18 +119,22 @@ function groupBy(items, key) {
 
 const BLANK_COL = { column_name: '', data_type: 'text', nullable: true, default: '' }
 
-function TablesPanel({ snapshot, toast, onRefresh }) {
+function TablesPanel({ snapshot, toast, onRefresh, requestConfirm }) {
   const [expanded, setExpanded]     = useState({})
   const [busy, setBusy]             = useState({})
   const [addColTable, setAddColTable] = useState(null)
   const [newCol, setNewCol]         = useState(BLANK_COL)
+  const [tableSearch, setTableSearch] = useState('')
 
   const colsByTable = groupBy(snapshot.columns || [], 'table_name')
   const rlsByTable  = groupBy(snapshot.rls_policies || [], 'table_name')
   const idxByTable  = groupBy(snapshot.indexes || [], 'table_name')
-  const tables = (snapshot.tables || []).filter(
+  const allTables = (snapshot.tables || []).filter(
     t => t.table_schema === 'public' && t.table_type === 'BASE TABLE'
   )
+  const tables = tableSearch
+    ? allTables.filter(t => t.table_name.toLowerCase().includes(tableSearch.toLowerCase()))
+    : allTables
 
   function toggle(name) {
     setExpanded(p => ({ ...p, [name]: !p[name] }))
@@ -148,7 +155,18 @@ function TablesPanel({ snapshot, toast, onRefresh }) {
   }
 
   async function handleDropCol(tableName, colName) {
-    if (!confirm(`Drop column "${colName}" from "${tableName}"? This cannot be undone.`)) return
+    const ok = await requestConfirm({
+      emoji: '🪓',
+      title: 'Drop column',
+      subtitle: 'Data loss — permanent.',
+      message: `Dropping "${colName}" from "${tableName}" will delete all data in that column. This cannot be undone. Row-level backups are your only safety net.`,
+      mode: 'type',
+      challenge: `Type "${colName}" to confirm`,
+      expectedInput: colName,
+      confirmLabel: '🪓 Drop Column',
+      danger: true,
+    })
+    if (!ok) return
     const key = `${tableName}__${colName}`
     setBusy(p => ({ ...p, [key]: true }))
     try {
@@ -186,14 +204,27 @@ function TablesPanel({ snapshot, toast, onRefresh }) {
     }
   }
 
-  if (!tables.length) return (
-    <div className="card p-8 text-center text-stone-500 dark:text-slate-400 text-sm">
-      No base tables found in public schema.
-    </div>
-  )
-
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          placeholder="Search tables…"
+          value={tableSearch}
+          onChange={e => setTableSearch(e.target.value)}
+          className="input text-sm py-1.5 flex-1 max-w-xs"
+        />
+        <span className="text-xs text-stone-400 dark:text-slate-500">
+          {tables.length} of {allTables.length} table{allTables.length !== 1 ? 's' : ''}
+        </span>
+      </div>
+
+      {!tables.length && (
+        <div className="card p-8 text-center text-stone-500 dark:text-slate-400 text-sm">
+          {tableSearch ? `No tables matching "${tableSearch}"` : 'No base tables found in public schema.'}
+        </div>
+      )}
+
       {tables.map(table => {
         const cols     = colsByTable[table.table_name]  || []
         const policies = rlsByTable[table.table_name]   || []
@@ -300,8 +331,19 @@ function TablesPanel({ snapshot, toast, onRefresh }) {
                         <div key={idx.indexname} className="flex items-center justify-between gap-2">
                           <span className="font-mono text-xs text-slate-600 dark:text-slate-300 truncate">{idx.indexname}</span>
                           <button
-                            onClick={() => {
-                              if (!confirm(`Drop index "${idx.indexname}"?`)) return
+                            onClick={async () => {
+                              const ok = await requestConfirm({
+                                emoji: '⚡',
+                                title: 'Drop index',
+                                subtitle: 'Queries may slow down.',
+                                message: `Dropping "${idx.indexname}" removes the index permanently. Any queries relying on this index will revert to sequential scans until a new index is created.`,
+                                mode: 'countdown',
+                                countdown: 2,
+                                challenge: 'Think it over…',
+                                confirmLabel: '⚡ Drop Index',
+                                danger: true,
+                              })
+                              if (!ok) return
                               setBusy(p => ({ ...p, [idx.indexname]: true }))
                               dropIndex(idx.indexname)
                                 .then(onRefresh)
@@ -385,8 +427,9 @@ const BLANK_POL = {
 }
 const CMD_MAP = { r: 'SELECT', a: 'INSERT', w: 'UPDATE', d: 'DELETE', '*': 'ALL' }
 
-function RLSPanel({ snapshot, toast, onRefresh }) {
+function RLSPanel({ snapshot, toast, onRefresh, requestConfirm }) {
   const [filter, setFilter]       = useState('')
+  const [policySearch, setPolicySearch] = useState('')
   const [busy, setBusy]           = useState({})
   const [modal, setModal]         = useState(null) // null | 'create' | policy
   const [form, setForm]           = useState(BLANK_POL)
@@ -395,9 +438,12 @@ function RLSPanel({ snapshot, toast, onRefresh }) {
     .filter(t => t.table_schema === 'public' && t.table_type === 'BASE TABLE')
     .map(t => t.table_name).sort()
 
-  const policies = (snapshot.rls_policies || []).filter(
+  const allPolicies = (snapshot.rls_policies || []).filter(
     p => !filter || p.table_name === filter
   )
+  const policies = policySearch
+    ? allPolicies.filter(p => p.policyname.toLowerCase().includes(policySearch.toLowerCase()))
+    : allPolicies
 
   function openCreate() {
     setForm({ ...BLANK_POL, table_name: filter })
@@ -418,7 +464,18 @@ function RLSPanel({ snapshot, toast, onRefresh }) {
   }
 
   async function handleDelete(pol) {
-    if (!confirm(`Drop policy "${pol.policyname}" on "${pol.table_name}"?`)) return
+    const ok = await requestConfirm({
+      emoji: '🔓',
+      title: 'Drop RLS policy',
+      subtitle: 'Security impact — rows may become exposed.',
+      message: `Dropping "${pol.policyname}" on "${pol.table_name}" removes this access rule immediately. Unprotected rows may become readable or writable to all roles until a replacement policy is applied.`,
+      mode: 'type',
+      challenge: `Type "${pol.policyname}" to confirm`,
+      expectedInput: pol.policyname,
+      confirmLabel: '🔓 Drop Policy',
+      danger: true,
+    })
+    if (!ok) return
     const key = `${pol.table_name}__${pol.policyname}`
     setBusy(p => ({ ...p, [key]: true }))
     try {
@@ -463,12 +520,22 @@ function RLSPanel({ snapshot, toast, onRefresh }) {
         <select
           value={filter}
           onChange={e => setFilter(e.target.value)}
-          className="input-field py-1.5 text-sm w-auto min-w-[200px]"
+          className="input-field py-1.5 text-sm w-auto min-w-[180px]"
         >
           <option value="">All tables</option>
           {tables.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
-        <button onClick={openCreate} className="btn-primary text-sm py-1.5">+ New Policy</button>
+        <input
+          type="text"
+          placeholder="Search policy name…"
+          value={policySearch}
+          onChange={e => setPolicySearch(e.target.value)}
+          className="input text-sm py-1.5 flex-1 min-w-40"
+        />
+        <span className="text-xs text-stone-400 dark:text-slate-500 self-center whitespace-nowrap">
+          {policies.length} shown
+        </span>
+        <button onClick={openCreate} className="btn-primary text-sm py-1.5 flex-shrink-0">+ New Policy</button>
       </div>
 
       {policies.length === 0 ? (
@@ -627,22 +694,37 @@ BEGIN
 END;
 $$;`
 
-function FunctionsPanel({ snapshot, toast, onRefresh }) {
+function FunctionsPanel({ snapshot, toast, onRefresh, requestConfirm }) {
   const [expanded, setExpanded] = useState({})
   const [busy, setBusy]         = useState({})
   const [modal, setModal]       = useState(null) // null | 'create' | fn
   const [definition, setDef]    = useState('')
+  const [fnSearch, setFnSearch] = useState('')
 
-  const functions = (snapshot.functions || []).filter(
+  const allFunctions = (snapshot.functions || []).filter(
     f => ['public', 'extensions'].includes(f.function_schema)
   )
+  const functions = fnSearch
+    ? allFunctions.filter(f => `${f.function_schema}.${f.function_name}`.toLowerCase().includes(fnSearch.toLowerCase()))
+    : allFunctions
 
   function toggle(key) {
     setExpanded(p => ({ ...p, [key]: !p[key] }))
   }
 
   async function handleDrop(fn) {
-    if (!confirm(`Drop function "${fn.function_schema}.${fn.function_name}"?`)) return
+    const ok = await requestConfirm({
+      emoji: '☠️',
+      title: 'Drop function',
+      subtitle: 'Any callers will break immediately.',
+      message: `Dropping "${fn.function_schema}.${fn.function_name}" removes it from the database. Triggers, views, or application code that calls this function will start throwing errors until it is recreated.`,
+      mode: 'type',
+      challenge: 'Type "drop it" to confirm',
+      expectedInput: 'drop it',
+      confirmLabel: '☠️ Drop Function',
+      danger: true,
+    })
+    if (!ok) return
     const key = `${fn.function_schema}__${fn.function_name}`
     setBusy(p => ({ ...p, [key]: true }))
     try {
@@ -676,10 +758,20 @@ function FunctionsPanel({ snapshot, toast, onRefresh }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex justify-end">
+      <div className="flex items-center gap-2 flex-wrap">
+        <input
+          type="text"
+          placeholder="Search functions…"
+          value={fnSearch}
+          onChange={e => setFnSearch(e.target.value)}
+          className="input text-sm py-1.5 flex-1 min-w-40"
+        />
+        <span className="text-xs text-stone-400 dark:text-slate-500 self-center whitespace-nowrap">
+          {functions.length} of {allFunctions.length}
+        </span>
         <button
           onClick={() => { setDef(NEW_FUNC_TEMPLATE); setModal('create') }}
-          className="btn-primary text-sm py-1.5"
+          className="btn-primary text-sm py-1.5 flex-shrink-0"
         >
           + New Function
         </button>
@@ -687,7 +779,7 @@ function FunctionsPanel({ snapshot, toast, onRefresh }) {
 
       {functions.length === 0 ? (
         <div className="card p-8 text-center text-stone-500 dark:text-slate-400 text-sm">
-          No functions in public/extensions schema.
+          {fnSearch ? `No functions matching "${fnSearch}"` : 'No functions in public/extensions schema.'}
         </div>
       ) : functions.map(fn => {
         const key = `${fn.function_schema}.${fn.function_name}`

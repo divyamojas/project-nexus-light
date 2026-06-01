@@ -1,10 +1,29 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
+import dynamic from 'next/dynamic'
 import { useAuth } from './AuthProvider.js'
 import { useToast } from './Toast.js'
-import { SchemaManager } from './SchemaManager.js'
-import { MonitoringDashboard } from './MonitoringDashboard.js'
+
+const MonitoringDashboard = dynamic(
+  () => import('./MonitoringDashboard.js').then(m => m.MonitoringDashboard),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="animate-pulse flex flex-col gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[...Array(4)].map((_, i) => <div key={i} className="card h-20" />)}
+        </div>
+        <div className="card h-64" />
+      </div>
+    ),
+  }
+)
+
+const SchemaManager = dynamic(
+  () => import('./SchemaManager.js').then(m => m.SchemaManager ?? m.default),
+  { ssr: false, loading: () => <div className="animate-pulse card h-64" /> }
+)
 import {
   getStats,
   getUsers,
@@ -26,17 +45,94 @@ import {
 } from '../lib/library.js'
 import { apiFetch } from '../lib/api.js'
 import { AddBookModal } from './AddBookModal.js'
+import { useConfirm } from './ConfirmDialog.js'
 import { formatDisplayName, formatDate } from '../lib/utils.js'
 
 const BASE_TABS = ['Overview', 'Approval Queue', 'Users', 'Books', 'Loans', 'Requests', 'Library']
+
+// ── Shared sort primitives (module-level — stable references) ─────────────────
+
+function SortBtn({ field, label, sortBy, sortDir, onSort }) {
+  const active = sortBy === field
+  return (
+    <button
+      onClick={() => onSort(field)}
+      className={`flex items-center gap-1 transition-colors hover:text-slate-700 dark:hover:text-slate-200 ${active ? 'text-emerald-600 dark:text-emerald-400' : ''}`}
+    >
+      {label}
+      <span className="text-xs opacity-70">{active ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}</span>
+    </button>
+  )
+}
+
+function useSortState(defaultField = 'created_at', defaultDir = 'desc') {
+  const [sortBy, setSortBy] = useState(defaultField)
+  const [sortDir, setSortDir] = useState(defaultDir)
+
+  function onSort(field) {
+    if (sortBy === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortBy(field); setSortDir('asc') }
+  }
+
+  function sp(field, label) {
+    return { field, label, sortBy, sortDir, onSort }
+  }
+
+  return { sortBy, sortDir, sp }
+}
+
+function TableSkeleton({ rows = 5, cols = 4 }) {
+  return (
+    <div className="card overflow-hidden animate-pulse">
+      <div className="bg-stone-50 dark:bg-slate-900/50 border-b border-stone-200 dark:border-slate-700 px-4 py-3 flex gap-4">
+        {[...Array(cols)].map((_, i) => <div key={i} className="h-3 bg-stone-200 dark:bg-slate-700 rounded flex-1" />)}
+      </div>
+      {[...Array(rows)].map((_, i) => (
+        <div key={i} className="flex gap-4 px-4 py-3.5 border-b border-stone-100 dark:border-slate-700/50">
+          <div className="flex flex-col gap-1.5 flex-1">
+            <div className="h-3 bg-stone-200 dark:bg-slate-700 rounded w-3/4" />
+            <div className="h-2.5 bg-stone-100 dark:bg-slate-800 rounded w-1/2" />
+          </div>
+          {[...Array(cols - 1)].map((_, j) => (
+            <div key={j} className="h-3 bg-stone-200 dark:bg-slate-700 rounded w-20 self-center" />
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
 
 export function AdminDashboard() {
   const [activeTab, setActiveTab] = useState('Overview')
   const { profile } = useAuth()
   const { toast } = useToast()
+  const { requestConfirm, ConfirmDialogNode } = useConfirm()
 
   const isSuperAdmin = profile?.role === 'super_admin'
   const tabs = isSuperAdmin ? [...BASE_TABS, 'Database', 'Monitoring'] : BASE_TABS
+
+  const [tabCache, setTabCache] = useState({})
+
+  function updateCache(key, data) {
+    setTabCache(prev => ({ ...prev, [key]: { data, ts: Date.now() } }))
+  }
+
+  function getCacheEntry(key, ttl = 60_000) {
+    const e = tabCache[key]
+    if (!e || Date.now() - e.ts > ttl) return null
+    return e.data
+  }
+
+  // Pre-warm Overview + Users/ApprovalQueue in parallel on mount
+  useEffect(() => {
+    Promise.all([
+      getStats().catch(() => null),
+      getUsers().catch(() => null),
+    ]).then(([statsData, usersData]) => {
+      if (statsData) updateCache('overview', statsData)
+      if (usersData) updateCache('users', usersData)
+    })
+  }, [])
 
   return (
     <div className="flex flex-col gap-6">
@@ -61,15 +157,17 @@ export function AdminDashboard() {
         ))}
       </div>
 
-      {activeTab === 'Overview'       && <OverviewTab toast={toast} />}
-      {activeTab === 'Approval Queue' && <ApprovalQueueTab toast={toast} />}
-      {activeTab === 'Users'          && <UsersTab toast={toast} currentUserId={profile?.id} />}
-      {activeTab === 'Books'          && <BooksTab toast={toast} />}
-      {activeTab === 'Loans'          && <LoansTab toast={toast} />}
-      {activeTab === 'Requests'       && <RequestsTab toast={toast} />}
-      {activeTab === 'Library'        && <LibraryTab toast={toast} />}
+      {activeTab === 'Overview'       && <OverviewTab toast={toast} initialData={getCacheEntry('overview')} onDataLoaded={d => updateCache('overview', d)} />}
+      {activeTab === 'Approval Queue' && <ApprovalQueueTab toast={toast} requestConfirm={requestConfirm} initialData={getCacheEntry('users', 15_000)} onDataLoaded={d => updateCache('users', d)} />}
+      {activeTab === 'Users'          && <UsersTab toast={toast} currentUserId={profile?.id} requestConfirm={requestConfirm} initialData={getCacheEntry('users')} onDataLoaded={d => updateCache('users', d)} />}
+      {activeTab === 'Books'          && <BooksTab toast={toast} requestConfirm={requestConfirm} initialData={getCacheEntry('books')} onDataLoaded={d => updateCache('books', d)} />}
+      {activeTab === 'Loans'          && <LoansTab toast={toast} initialData={getCacheEntry('loans')} onDataLoaded={d => updateCache('loans', d)} />}
+      {activeTab === 'Requests'       && <RequestsTab toast={toast} initialData={getCacheEntry('requests')} onDataLoaded={d => updateCache('requests', d)} />}
+      {activeTab === 'Library'        && <LibraryTab toast={toast} requestConfirm={requestConfirm} />}
       {activeTab === 'Database'    && isSuperAdmin && <SchemaManager toast={toast} />}
       {activeTab === 'Monitoring'  && isSuperAdmin && <MonitoringDashboard toast={toast} />}
+
+      {ConfirmDialogNode}
     </div>
   )
 }
@@ -88,13 +186,14 @@ function StatCard({ label, value, icon }) {
   )
 }
 
-function OverviewTab({ toast }) {
-  const [stats, setStats] = useState(null)
-  const [loading, setLoading] = useState(true)
+function OverviewTab({ toast, initialData, onDataLoaded }) {
+  const [stats, setStats] = useState(initialData ?? null)
+  const [loading, setLoading] = useState(!initialData)
 
   useEffect(() => {
+    if (initialData) return
     getStats()
-      .then(setStats)
+      .then(data => { setStats(data); onDataLoaded?.(data) })
       .catch(() => toast({ message: 'Failed to load stats', type: 'error' }))
       .finally(() => setLoading(false))
   }, [])
@@ -111,19 +210,35 @@ function OverviewTab({ toast }) {
   )
 }
 
-function ApprovalQueueTab({ toast }) {
-  const [users, setUsers] = useState([])
-  const [loading, setLoading] = useState(true)
+function ApprovalQueueTab({ toast, requestConfirm, initialData, onDataLoaded }) {
+  const [users, setUsers] = useState(initialData ? initialData.filter(u => u.approval_status === 'pending') : [])
+  const [loading, setLoading] = useState(!initialData)
   const [updating, setUpdating] = useState({})
 
   useEffect(() => {
+    if (initialData) return
     getUsers()
-      .then(data => setUsers((data || []).filter(u => u.approval_status === 'pending')))
+      .then(data => { setUsers((data || []).filter(u => u.approval_status === 'pending')); onDataLoaded?.(data || []) })
       .catch(() => toast({ message: 'Failed to load users', type: 'error' }))
       .finally(() => setLoading(false))
   }, [])
 
-  async function handleApproval(id, status) {
+  async function handleApproval(id, status, user) {
+    if (status === 'rejected') {
+      const name = formatDisplayName(user) || user.email || 'this user'
+      const ok = await requestConfirm({
+        emoji: '🚪',
+        title: 'Reject applicant?',
+        subtitle: 'This will lock them out of Leaflet.',
+        message: `${name} applied to join Leaflet. Rejecting will permanently deny their access — they will need to re-apply or be manually approved later.`,
+        mode: 'countdown',
+        countdown: 3,
+        challenge: 'Take a moment to reconsider…',
+        confirmLabel: '✖ Reject',
+        danger: true,
+      })
+      if (!ok) return
+    }
     setUpdating(p => ({ ...p, [id]: true }))
     try {
       await updateUserApproval(id, status)
@@ -136,7 +251,7 @@ function ApprovalQueueTab({ toast }) {
     }
   }
 
-  if (loading) return <div className="text-stone-500 dark:text-slate-400 text-sm">Loading…</div>
+  if (loading) return <TableSkeleton rows={3} cols={3} />
 
   if (!users.length) return (
     <div className="card p-8 text-center">
@@ -167,14 +282,14 @@ function ApprovalQueueTab({ toast }) {
               <td className="px-4 py-3">
                 <div className="flex gap-2 justify-end">
                   <button
-                    onClick={() => handleApproval(u.id, 'approved')}
+                    onClick={() => handleApproval(u.id, 'approved', u)}
                     disabled={updating[u.id]}
                     className="btn-primary text-xs py-1.5 px-3"
                   >
                     Approve
                   </button>
                   <button
-                    onClick={() => handleApproval(u.id, 'rejected')}
+                    onClick={() => handleApproval(u.id, 'rejected', u)}
                     disabled={updating[u.id]}
                     className="btn-danger text-xs py-1.5 px-3"
                   >
@@ -192,17 +307,34 @@ function ApprovalQueueTab({ toast }) {
 
 const ROLES = ['user', 'admin', 'super_admin']
 
-function UsersTab({ toast, currentUserId }) {
-  const [users, setUsers] = useState([])
-  const [loading, setLoading] = useState(true)
+function UsersTab({ toast, currentUserId, requestConfirm, initialData, onDataLoaded }) {
+  const [users, setUsers] = useState(initialData ?? [])
+  const [loading, setLoading] = useState(!initialData)
   const [updating, setUpdating] = useState({})
+  const [search, setSearch] = useState('')
+  const [roleFilter, setRoleFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const { sortBy, sortDir, sp } = useSortState('created_at', 'desc')
 
   useEffect(() => {
+    if (initialData) return
     getUsers()
-      .then(data => setUsers(data || []))
+      .then(data => { setUsers(data || []); onDataLoaded?.(data || []) })
       .catch(() => toast({ message: 'Failed to load users', type: 'error' }))
       .finally(() => setLoading(false))
   }, [])
+
+  const filtered = useMemo(() => users
+    .filter(u =>
+      (!search || [u.username, u.first_name, u.last_name, u.email].some(v => v?.toLowerCase().includes(search.toLowerCase()))) &&
+      (!roleFilter || u.role === roleFilter) &&
+      (!statusFilter || u.approval_status === statusFilter)
+    )
+    .sort((a, b) => {
+      let va = a[sortBy] ?? '', vb = b[sortBy] ?? ''
+      if (typeof va === 'string') { va = va.toLowerCase(); vb = vb.toLowerCase() }
+      return (va < vb ? -1 : va > vb ? 1 : 0) * (sortDir === 'asc' ? 1 : -1)
+    }), [users, search, roleFilter, statusFilter, sortBy, sortDir])
 
   async function handleRoleChange(id, role) {
     setUpdating(p => ({ ...p, [id + 'role']: true }))
@@ -217,153 +349,257 @@ function UsersTab({ toast, currentUserId }) {
     }
   }
 
-  async function handleDelete(id) {
-    if (!confirm('Delete this user? This cannot be undone.')) return
-    setUpdating(p => ({ ...p, [id + 'del']: true }))
+  async function handleDelete(user) {
+    const handle = user.username ? `@${user.username}` : (user.email || 'this user')
+    const ok = await requestConfirm({
+      emoji: '💀',
+      title: 'Delete user account',
+      subtitle: 'Permanent — no undo.',
+      message: `You are about to permanently delete ${formatDisplayName(user)}'s account (${handle}). Their books, loans, and history will vanish from Leaflet forever.`,
+      mode: 'type',
+      challenge: `Type "${handle}" to confirm deletion`,
+      expectedInput: handle,
+      confirmLabel: '🗑️ Delete Forever',
+      danger: true,
+    })
+    if (!ok) return
+    setUpdating(p => ({ ...p, [user.id + 'del']: true }))
     try {
-      await deleteUser(id)
-      setUsers(prev => prev.filter(u => u.id !== id))
+      await deleteUser(user.id)
+      setUsers(prev => prev.filter(u => u.id !== user.id))
       toast({ message: 'User deleted', type: 'success' })
     } catch (err) {
       toast({ message: err.message || 'Failed to delete', type: 'error' })
     } finally {
-      setUpdating(p => ({ ...p, [id + 'del']: false }))
+      setUpdating(p => ({ ...p, [user.id + 'del']: false }))
     }
   }
 
-  if (loading) return <div className="text-stone-500 dark:text-slate-400 text-sm">Loading…</div>
+  if (loading) return <TableSkeleton rows={6} cols={5} />
 
   return (
-    <div className="card overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="bg-stone-50 dark:bg-slate-900/50 border-b border-stone-200 dark:border-slate-700">
-          <tr>
-            <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">User</th>
-            <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Status</th>
-            <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Role</th>
-            <th className="text-right px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Actions</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-stone-100 dark:divide-slate-700">
-          {users.map(u => (
-            <tr key={u.id} className="hover:bg-stone-50 dark:hover:bg-slate-700/30">
-              <td className="px-4 py-3">
-                <p className="font-medium text-slate-800 dark:text-slate-200">{formatDisplayName(u)}</p>
-                <p className="text-stone-500 dark:text-slate-400 text-xs">@{u.username || 'no username'}</p>
-              </td>
-              <td className="px-4 py-3">
-                <span className={`badge ${u.approval_status === 'approved' ? 'badge-green' : u.approval_status === 'rejected' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' : 'badge-gray'}`}>
-                  {u.approval_status}
-                </span>
-              </td>
-              <td className="px-4 py-3">
-                <select
-                  value={u.role || 'user'}
-                  onChange={e => handleRoleChange(u.id, e.target.value)}
-                  disabled={u.id === currentUserId || updating[u.id + 'role']}
-                  className="input-field py-1 text-xs w-auto min-w-[120px]"
-                >
-                  {ROLES.map(r => (
-                    <option key={r} value={r}>{r}</option>
-                  ))}
-                </select>
-              </td>
-              <td className="px-4 py-3">
-                <div className="flex justify-end">
-                  <button
-                    onClick={() => handleDelete(u.id)}
-                    disabled={u.id === currentUserId || updating[u.id + 'del']}
-                    className="text-xs text-red-600 dark:text-red-400 hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    Delete
-                  </button>
-                </div>
-              </td>
+    <div className="flex flex-col gap-3">
+      {/* Filters */}
+      <div className="flex flex-wrap gap-2">
+        <input
+          type="text"
+          placeholder="Search name / username / email…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="input text-sm py-1.5 flex-1 min-w-48"
+        />
+        <select value={roleFilter} onChange={e => setRoleFilter(e.target.value)} className="input text-sm py-1.5 w-36">
+          <option value="">All roles</option>
+          {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+        </select>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="input text-sm py-1.5 w-36">
+          <option value="">All statuses</option>
+          {['pending', 'approved', 'rejected'].map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <span className="text-xs text-stone-400 dark:text-slate-500 self-center">{filtered.length} of {users.length}</span>
+      </div>
+
+      <div className="card overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-stone-50 dark:bg-slate-900/50 border-b border-stone-200 dark:border-slate-700">
+            <tr>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium"><SortBtn {...sp('first_name', 'User')} /></th>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium"><SortBtn {...sp('approval_status', 'Status')} /></th>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium"><SortBtn {...sp('role', 'Role')} /></th>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium"><SortBtn {...sp('created_at', 'Joined')} /></th>
+              <th className="text-right px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Actions</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-stone-100 dark:divide-slate-700">
+            {filtered.map(u => (
+              <tr key={u.id} className="hover:bg-stone-50 dark:hover:bg-slate-700/30">
+                <td className="px-4 py-3">
+                  <p className="font-medium text-slate-800 dark:text-slate-200">{formatDisplayName(u)}</p>
+                  <p className="text-stone-500 dark:text-slate-400 text-xs">@{u.username || 'no username'}</p>
+                </td>
+                <td className="px-4 py-3">
+                  <span className={`badge ${u.approval_status === 'approved' ? 'badge-green' : u.approval_status === 'rejected' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' : 'badge-gray'}`}>
+                    {u.approval_status}
+                  </span>
+                </td>
+                <td className="px-4 py-3">
+                  <select
+                    value={u.role || 'user'}
+                    onChange={e => handleRoleChange(u.id, e.target.value)}
+                    disabled={u.id === currentUserId || updating[u.id + 'role']}
+                    className="input-field py-1 text-xs w-auto min-w-[120px]"
+                  >
+                    {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </td>
+                <td className="px-4 py-3 text-stone-500 dark:text-slate-400 text-xs">{formatDate(u.created_at)}</td>
+                <td className="px-4 py-3">
+                  <div className="flex justify-end">
+                    <button
+                      onClick={() => handleDelete(u)}
+                      disabled={u.id === currentUserId || updating[u.id + 'del']}
+                      className="text-xs text-red-600 dark:text-red-400 hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
 
-function BooksTab({ toast }) {
-  const [books, setBooks] = useState([])
-  const [loading, setLoading] = useState(true)
+function BooksTab({ toast, requestConfirm, initialData, onDataLoaded }) {
+  const [books, setBooks] = useState(initialData ?? [])
+  const [loading, setLoading] = useState(!initialData)
   const [updating, setUpdating] = useState({})
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [archivedFilter, setArchivedFilter] = useState('')
+  const { sortBy, sortDir, sp } = useSortState('created_at', 'desc')
 
   useEffect(() => {
+    if (initialData) return
     getAdminBooks()
-      .then(data => setBooks(data || []))
+      .then(data => { setBooks(data || []); onDataLoaded?.(data || []) })
       .catch(() => toast({ message: 'Failed to load books', type: 'error' }))
       .finally(() => setLoading(false))
   }, [])
 
-  async function handleToggleArchive(id, archived) {
-    setUpdating(p => ({ ...p, [id]: true }))
+  const filtered = useMemo(() => books
+    .filter(b =>
+      (!search || [b.title, b.author].some(v => v?.toLowerCase().includes(search.toLowerCase()))) &&
+      (!statusFilter || b.status === statusFilter) &&
+      (archivedFilter === '' || String(b.archived) === archivedFilter)
+    )
+    .sort((a, b) => {
+      let va = a[sortBy] ?? '', vb = b[sortBy] ?? ''
+      if (typeof va === 'string') { va = va.toLowerCase(); vb = vb.toLowerCase() }
+      return (va < vb ? -1 : va > vb ? 1 : 0) * (sortDir === 'asc' ? 1 : -1)
+    }), [books, search, statusFilter, archivedFilter, sortBy, sortDir])
+
+  async function handleToggleArchive(book) {
+    const willArchive = !book.archived
+    if (willArchive) {
+      const ok = await requestConfirm({
+        emoji: '📦',
+        title: 'Archive this book?',
+        subtitle: 'It will be hidden from users.',
+        message: `"${book.title}" will be archived and hidden from all users. You can unarchive it later.`,
+        mode: 'countdown',
+        countdown: 2,
+        challenge: 'Archiving in…',
+        confirmLabel: '📦 Archive',
+        danger: false,
+      })
+      if (!ok) return
+    }
+    setUpdating(p => ({ ...p, [book.id]: true }))
     try {
-      await toggleBookArchive(id, !archived)
-      setBooks(prev => prev.map(b => b.id === id ? { ...b, archived: !archived } : b))
-      toast({ message: archived ? 'Book unarchived' : 'Book archived', type: 'success' })
+      await toggleBookArchive(book.id, willArchive)
+      setBooks(prev => prev.map(b => b.id === book.id ? { ...b, archived: willArchive } : b))
+      toast({ message: willArchive ? 'Book archived' : 'Book unarchived', type: 'success' })
     } catch (err) {
       toast({ message: err.message || 'Failed', type: 'error' })
     } finally {
-      setUpdating(p => ({ ...p, [id]: false }))
+      setUpdating(p => ({ ...p, [book.id]: false }))
     }
   }
 
-  if (loading) return <div className="text-stone-500 dark:text-slate-400 text-sm">Loading…</div>
+  if (loading) return <TableSkeleton rows={5} cols={4} />
 
   return (
-    <div className="card overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="bg-stone-50 dark:bg-slate-900/50 border-b border-stone-200 dark:border-slate-700">
-          <tr>
-            <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Book</th>
-            <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Status</th>
-            <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Archived</th>
-            <th className="text-right px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Actions</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-stone-100 dark:divide-slate-700">
-          {books.map(b => (
-            <tr key={b.id} className="hover:bg-stone-50 dark:hover:bg-slate-700/30">
-              <td className="px-4 py-3">
-                <p className="font-medium text-slate-800 dark:text-slate-200">{b.catalog?.title || 'Untitled'}</p>
-                <p className="text-stone-500 dark:text-slate-400 text-xs">{b.catalog?.author}</p>
-              </td>
-              <td className="px-4 py-3 text-stone-600 dark:text-slate-400 capitalize">{b.status}</td>
-              <td className="px-4 py-3">
-                <span className={b.archived ? 'badge-gray' : 'badge-green'}>{b.archived ? 'Yes' : 'No'}</span>
-              </td>
-              <td className="px-4 py-3 text-right">
-                <button
-                  onClick={() => handleToggleArchive(b.id, b.archived)}
-                  disabled={updating[b.id]}
-                  className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline disabled:opacity-40"
-                >
-                  {b.archived ? 'Unarchive' : 'Archive'}
-                </button>
-              </td>
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap gap-2">
+        <input
+          type="text"
+          placeholder="Search title / author…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="input text-sm py-1.5 flex-1 min-w-48"
+        />
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="input text-sm py-1.5 w-32">
+          <option value="">All statuses</option>
+          {['available', 'scheduled', 'lent'].map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select value={archivedFilter} onChange={e => setArchivedFilter(e.target.value)} className="input text-sm py-1.5 w-32">
+          <option value="">All</option>
+          <option value="false">Active</option>
+          <option value="true">Archived</option>
+        </select>
+        <span className="text-xs text-stone-400 dark:text-slate-500 self-center">{filtered.length} of {books.length}</span>
+      </div>
+
+      <div className="card overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-stone-50 dark:bg-slate-900/50 border-b border-stone-200 dark:border-slate-700">
+            <tr>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium"><SortBtn {...sp('title', 'Book')} /></th>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium"><SortBtn {...sp('status', 'Status')} /></th>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium"><SortBtn {...sp('archived', 'Archived')} /></th>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium"><SortBtn {...sp('created_at', 'Added')} /></th>
+              <th className="text-right px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Actions</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-stone-100 dark:divide-slate-700">
+            {filtered.map(b => (
+              <tr key={b.id} className="hover:bg-stone-50 dark:hover:bg-slate-700/30">
+                <td className="px-4 py-3">
+                  <p className="font-medium text-slate-800 dark:text-slate-200">{b.title || 'Untitled'}</p>
+                  <p className="text-stone-500 dark:text-slate-400 text-xs">{b.author}</p>
+                </td>
+                <td className="px-4 py-3 text-stone-600 dark:text-slate-400 capitalize">{b.status}</td>
+                <td className="px-4 py-3">
+                  <span className={b.archived ? 'badge-gray' : 'badge-green'}>{b.archived ? 'Yes' : 'No'}</span>
+                </td>
+                <td className="px-4 py-3 text-stone-500 dark:text-slate-400 text-xs">{formatDate(b.created_at)}</td>
+                <td className="px-4 py-3 text-right">
+                  <button
+                    onClick={() => handleToggleArchive(b)}
+                    disabled={updating[b.id]}
+                    className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline disabled:opacity-40"
+                  >
+                    {b.archived ? 'Unarchive' : 'Archive'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
 
-function LoansTab({ toast }) {
-  const [loans, setLoans] = useState([])
-  const [loading, setLoading] = useState(true)
+function LoansTab({ toast, initialData, onDataLoaded }) {
+  const [loans, setLoans] = useState(initialData ?? [])
+  const [loading, setLoading] = useState(!initialData)
   const [updating, setUpdating] = useState({})
+  const [statusFilter, setStatusFilter] = useState('active')
+  const [search, setSearch] = useState('')
+  const { sortBy, sortDir, sp } = useSortState('loaned_at', 'desc')
 
   useEffect(() => {
+    if (initialData) return
     getAdminLoans()
-      .then(data => setLoans(data || []))
+      .then(data => { setLoans(data || []); onDataLoaded?.(data || []) })
       .catch(() => toast({ message: 'Failed to load loans', type: 'error' }))
       .finally(() => setLoading(false))
   }, [])
+
+  const filtered = useMemo(() => loans
+    .filter(l =>
+      (!statusFilter || l.status === statusFilter) &&
+      (!search || [l.title, l.author].some(v => v?.toLowerCase().includes(search.toLowerCase())))
+    )
+    .sort((a, b) => {
+      const va = a[sortBy] ?? '', vb = b[sortBy] ?? ''
+      return (va < vb ? -1 : va > vb ? 1 : 0) * (sortDir === 'asc' ? 1 : -1)
+    }), [loans, statusFilter, search, sortBy, sortDir])
 
   async function handleComplete(id) {
     setUpdating(p => ({ ...p, [id]: true }))
@@ -378,61 +614,96 @@ function LoansTab({ toast }) {
     }
   }
 
-  if (loading) return <div className="text-stone-500 dark:text-slate-400 text-sm">Loading…</div>
+  if (loading) return <TableSkeleton rows={5} cols={4} />
 
   return (
-    <div className="card overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="bg-stone-50 dark:bg-slate-900/50 border-b border-stone-200 dark:border-slate-700">
-          <tr>
-            <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Book</th>
-            <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Status</th>
-            <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Loaned</th>
-            <th className="text-right px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Actions</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-stone-100 dark:divide-slate-700">
-          {loans.map(l => (
-            <tr key={l.id} className="hover:bg-stone-50 dark:hover:bg-slate-700/30">
-              <td className="px-4 py-3">
-                <p className="font-medium text-slate-800 dark:text-slate-200">{l.book?.catalog?.title || 'Untitled'}</p>
-              </td>
-              <td className="px-4 py-3">
-                <span className={l.status === 'active' ? 'badge-blue' : 'badge-green'}>{l.status}</span>
-              </td>
-              <td className="px-4 py-3 text-stone-500 dark:text-slate-400">{formatDate(l.loaned_at)}</td>
-              <td className="px-4 py-3 text-right">
-                {l.status === 'active' && (
-                  <button
-                    onClick={() => handleComplete(l.id)}
-                    disabled={updating[l.id]}
-                    className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline disabled:opacity-40"
-                  >
-                    Mark Returned
-                  </button>
-                )}
-              </td>
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap gap-2">
+        <input
+          type="text"
+          placeholder="Search title / author…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="input text-sm py-1.5 flex-1 min-w-48"
+        />
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="input text-sm py-1.5 w-32">
+          <option value="">All</option>
+          <option value="active">Active</option>
+          <option value="returned">Returned</option>
+        </select>
+        <span className="text-xs text-stone-400 dark:text-slate-500 self-center">{filtered.length} of {loans.length}</span>
+      </div>
+
+      <div className="card overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-stone-50 dark:bg-slate-900/50 border-b border-stone-200 dark:border-slate-700">
+            <tr>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium"><SortBtn {...sp('title', 'Book')} /></th>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium"><SortBtn {...sp('status', 'Status')} /></th>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium"><SortBtn {...sp('loaned_at', 'Loaned')} /></th>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium hidden sm:table-cell"><SortBtn {...sp('returned_at', 'Returned')} /></th>
+              <th className="text-right px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Actions</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-stone-100 dark:divide-slate-700">
+            {filtered.map(l => (
+              <tr key={l.id} className="hover:bg-stone-50 dark:hover:bg-slate-700/30">
+                <td className="px-4 py-3">
+                  <p className="font-medium text-slate-800 dark:text-slate-200">{l.title || 'Untitled'}</p>
+                  <p className="text-stone-500 dark:text-slate-400 text-xs">{l.author}</p>
+                </td>
+                <td className="px-4 py-3">
+                  <span className={l.status === 'active' ? 'badge-blue' : 'badge-green'}>{l.status}</span>
+                </td>
+                <td className="px-4 py-3 text-stone-500 dark:text-slate-400 text-xs">{formatDate(l.loaned_at)}</td>
+                <td className="px-4 py-3 text-stone-500 dark:text-slate-400 text-xs hidden sm:table-cell">{l.returned_at ? formatDate(l.returned_at) : '—'}</td>
+                <td className="px-4 py-3 text-right">
+                  {l.status === 'active' && (
+                    <button
+                      onClick={() => handleComplete(l.id)}
+                      disabled={updating[l.id]}
+                      className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline disabled:opacity-40"
+                    >
+                      Mark Returned
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
 
 const REQUEST_STATUSES = ['pending', 'accepted', 'rejected', 'cancelled']
 
-function RequestsTab({ toast }) {
-  const [requests, setRequests] = useState([])
-  const [loading, setLoading] = useState(true)
+function RequestsTab({ toast, initialData, onDataLoaded }) {
+  const [requests, setRequests] = useState(initialData ?? [])
+  const [loading, setLoading] = useState(!initialData)
   const [updating, setUpdating] = useState({})
+  const [statusFilter, setStatusFilter] = useState('pending')
+  const [search, setSearch] = useState('')
+  const { sortBy, sortDir, sp } = useSortState('created_at', 'desc')
 
   useEffect(() => {
+    if (initialData) return
     getAdminRequests()
-      .then(data => setRequests(data || []))
+      .then(data => { setRequests(data || []); onDataLoaded?.(data || []) })
       .catch(() => toast({ message: 'Failed to load requests', type: 'error' }))
       .finally(() => setLoading(false))
   }, [])
+
+  const filtered = useMemo(() => requests
+    .filter(r =>
+      (!statusFilter || r.status === statusFilter) &&
+      (!search || r.book?.catalog?.title?.toLowerCase().includes(search.toLowerCase()) || r.book_id?.startsWith(search))
+    )
+    .sort((a, b) => {
+      const va = a[sortBy] ?? '', vb = b[sortBy] ?? ''
+      return (va < vb ? -1 : va > vb ? 1 : 0) * (sortDir === 'asc' ? 1 : -1)
+    }), [requests, statusFilter, search, sortBy, sortDir])
 
   async function handleStatusChange(id, status) {
     setUpdating(p => ({ ...p, [id]: true }))
@@ -447,46 +718,61 @@ function RequestsTab({ toast }) {
     }
   }
 
-  if (loading) return <div className="text-stone-500 dark:text-slate-400 text-sm">Loading…</div>
+  if (loading) return <TableSkeleton rows={5} cols={4} />
 
   return (
-    <div className="card overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="bg-stone-50 dark:bg-slate-900/50 border-b border-stone-200 dark:border-slate-700">
-          <tr>
-            <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Book</th>
-            <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Created</th>
-            <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Status</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-stone-100 dark:divide-slate-700">
-          {requests.map(r => (
-            <tr key={r.id} className="hover:bg-stone-50 dark:hover:bg-slate-700/30">
-              <td className="px-4 py-3 font-medium text-slate-800 dark:text-slate-200">
-                {r.book?.catalog?.title || 'Book #' + r.book_id?.slice(0, 8)}
-              </td>
-              <td className="px-4 py-3 text-stone-500 dark:text-slate-400">{formatDate(r.created_at)}</td>
-              <td className="px-4 py-3">
-                <select
-                  value={r.status}
-                  onChange={e => handleStatusChange(r.id, e.target.value)}
-                  disabled={updating[r.id]}
-                  className="input-field py-1 text-xs w-auto"
-                >
-                  {REQUEST_STATUSES.map(s => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
-              </td>
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap gap-2">
+        <input
+          type="text"
+          placeholder="Search by book title…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="input text-sm py-1.5 flex-1 min-w-48"
+        />
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="input text-sm py-1.5 w-32">
+          <option value="">All</option>
+          {REQUEST_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <span className="text-xs text-stone-400 dark:text-slate-500 self-center">{filtered.length} of {requests.length}</span>
+      </div>
+
+      <div className="card overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-stone-50 dark:bg-slate-900/50 border-b border-stone-200 dark:border-slate-700">
+            <tr>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium">Book</th>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium"><SortBtn {...sp('created_at', 'Created')} /></th>
+              <th className="text-left px-4 py-3 text-stone-500 dark:text-slate-400 font-medium"><SortBtn {...sp('status', 'Status')} /></th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-stone-100 dark:divide-slate-700">
+            {filtered.map(r => (
+              <tr key={r.id} className="hover:bg-stone-50 dark:hover:bg-slate-700/30">
+                <td className="px-4 py-3 font-medium text-slate-800 dark:text-slate-200">
+                  {r.book?.catalog?.title || 'Book #' + r.book_id?.slice(0, 8)}
+                </td>
+                <td className="px-4 py-3 text-stone-500 dark:text-slate-400 text-xs">{formatDate(r.created_at)}</td>
+                <td className="px-4 py-3">
+                  <select
+                    value={r.status}
+                    onChange={e => handleStatusChange(r.id, e.target.value)}
+                    disabled={updating[r.id]}
+                    className="input-field py-1 text-xs w-auto"
+                  >
+                    {REQUEST_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
 
-function LibraryTab({ toast }) {
+function LibraryTab({ toast, requestConfirm }) {
   const [libraries, setLibraries] = useState([])
   const [selectedLib, setSelectedLib] = useState(null)
   const [libBooks, setLibBooks] = useState([])
@@ -553,17 +839,29 @@ function LibraryTab({ toast }) {
     }
   }
 
-  async function handleRemoveBook(bookId) {
-    if (!confirm('Remove this book from the library?')) return
-    setRemoving(p => ({ ...p, [bookId]: true }))
+  async function handleRemoveBook(book) {
+    const title = book.catalog?.title || book.title || 'this book'
+    const ok = await requestConfirm({
+      emoji: '📤',
+      title: 'Remove from library?',
+      subtitle: 'The book will leave its home.',
+      message: `"${title}" will be removed from this library. The physical copy must be retrieved separately. This cannot be undone.`,
+      mode: 'type',
+      challenge: 'Type the book title to confirm',
+      expectedInput: title,
+      confirmLabel: '📤 Remove',
+      danger: true,
+    })
+    if (!ok) return
+    setRemoving(p => ({ ...p, [book.id]: true }))
     try {
-      await removeBookFromLibrary(selectedLib, bookId)
-      setLibBooks(prev => prev.filter(b => b.id !== bookId))
+      await removeBookFromLibrary(selectedLib, book.id)
+      setLibBooks(prev => prev.filter(b => b.id !== book.id))
       toast({ message: 'Book removed', type: 'success' })
     } catch (err) {
       toast({ message: err.message || 'Failed to remove book', type: 'error' })
     } finally {
-      setRemoving(p => ({ ...p, [bookId]: false }))
+      setRemoving(p => ({ ...p, [book.id]: false }))
     }
   }
 
@@ -583,7 +881,7 @@ function LibraryTab({ toast }) {
 
   const currentLib = libraries.find(l => l.id === selectedLib)
 
-  if (loading) return <div className="text-stone-500 dark:text-slate-400 text-sm">Loading…</div>
+  if (loading) return <TableSkeleton rows={5} cols={4} />
 
   return (
     <div className="space-y-6">
@@ -706,7 +1004,7 @@ function LibraryTab({ toast }) {
                         <td className="px-4 py-3 capitalize text-stone-600 dark:text-slate-400">{b.status}</td>
                         <td className="px-4 py-3 text-right">
                           <button
-                            onClick={() => handleRemoveBook(b.id)}
+                            onClick={() => handleRemoveBook(b)}
                             disabled={removing[b.id] || b.status !== 'available'}
                             className="text-xs text-red-600 dark:text-red-400 hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
                             title={b.status !== 'available' ? 'Cannot remove a checked-out book' : ''}
