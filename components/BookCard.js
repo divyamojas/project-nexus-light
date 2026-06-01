@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import { statusColor, conditionLabel, truncate } from '../lib/utils.js'
 
 export function BookCard({ book, onAction, currentUserId }) {
@@ -19,12 +20,12 @@ export function BookCard({ book, onAction, currentUserId }) {
       {/* Cover */}
       <div className="relative w-full aspect-[3/4] rounded-lg overflow-hidden bg-stone-100 dark:bg-slate-700 flex-shrink-0">
         {catalog.cover_url ? (
-          <img
+          <Image
             src={catalog.cover_url}
             alt={catalog.title || 'Book cover'}
-            className="w-full h-full object-cover"
-            loading="lazy"
-            decoding="async"
+            fill
+            sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 200px"
+            style={{ objectFit: 'cover' }}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center">

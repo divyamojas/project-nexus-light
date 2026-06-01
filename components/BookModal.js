@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Image from 'next/image'
 import { apiFetch } from '../lib/api.js'
 import { statusColor, conditionLabel, formatDate } from '../lib/utils.js'
 
@@ -73,9 +74,16 @@ export function BookModal({ book, onClose, onAction }) {
 
         <div className="p-6 flex flex-col sm:flex-row gap-6">
           {/* Cover */}
-          <div className="flex-shrink-0 w-36 h-48 rounded-xl overflow-hidden bg-stone-100 dark:bg-slate-700 self-start mx-auto sm:mx-0">
+          <div className="relative flex-shrink-0 w-36 h-48 rounded-xl overflow-hidden bg-stone-100 dark:bg-slate-700 self-start mx-auto sm:mx-0">
             {catalog.cover_url ? (
-              <img src={catalog.cover_url} alt={catalog.title} className="w-full h-full object-cover" loading="eager" decoding="async" />
+              <Image
+                src={catalog.cover_url}
+                alt={catalog.title || 'Book cover'}
+                fill
+                sizes="144px"
+                style={{ objectFit: 'cover' }}
+                priority
+              />
             ) : (
               <div className="w-full h-full flex items-center justify-center">
                 <svg className="w-12 h-12 text-stone-300 dark:text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
