@@ -1,8 +1,11 @@
+import { cookies } from 'next/headers'
 import './globals.css'
 import { ErrorBoundary } from '../components/ErrorBoundary.js'
 import { AuthProvider } from '../components/AuthProvider.js'
 import { ToastProvider } from '../components/Toast.js'
+import { SWRProvider } from '../components/SWRProvider.js'
 import AppChrome from '../components/AppChrome.js'
+import { serverFetch } from '../lib/serverFetch.js'
 
 export const metadata = {
   title: 'Leaflet',
@@ -10,7 +13,10 @@ export const metadata = {
   manifest: '/manifest.json',
 }
 
-export default function RootLayout({ children }) {
+export default async function RootLayout({ children }) {
+  const token = cookies().get('leaflet_token')?.value
+  const initialProfile = await serverFetch('/users/me', token)
+
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
@@ -21,14 +27,16 @@ export default function RootLayout({ children }) {
       </head>
       <body>
         <ErrorBoundary>
-          <AuthProvider>
-            <ToastProvider>
-              <AppChrome />
-              <main>
-                {children}
-              </main>
-            </ToastProvider>
-          </AuthProvider>
+          <SWRProvider>
+            <AuthProvider initialProfile={initialProfile}>
+              <ToastProvider>
+                <AppChrome />
+                <main>
+                  {children}
+                </main>
+              </ToastProvider>
+            </AuthProvider>
+          </SWRProvider>
         </ErrorBoundary>
       </body>
     </html>

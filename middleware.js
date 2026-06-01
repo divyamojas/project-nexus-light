@@ -4,7 +4,7 @@ export function middleware(request) {
   const token = request.cookies.get('leaflet_token')?.value
   const { pathname } = request.nextUrl
 
-  const PUBLIC = ['/', '/auth', '/landing', '/legal', '/_next', '/icons', '/favicon', '/manifest']
+  const PUBLIC = ['/', '/auth', '/landing', '/legal', '/_next', '/icons', '/favicon', '/manifest', '/api']
   const isPublic = PUBLIC.some(p => pathname === p || pathname.startsWith(p + '/'))
 
   if (!token && !isPublic) {
