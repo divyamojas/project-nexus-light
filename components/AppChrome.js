@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useAuth } from './AuthProvider.js'
@@ -13,6 +13,12 @@ export function AppChrome() {
   const pathname = usePathname()
   const { role } = useAuth()
   const { theme, toggleTheme } = useAppearance()
+  const [pendingHref, setPendingHref] = useState(null)
+
+  // Clear pending state once navigation completes
+  useEffect(() => {
+    setPendingHref(null)
+  }, [pathname])
 
   // Apply role-based accent theme to <html>
   useEffect(() => {
@@ -63,8 +69,23 @@ export function AppChrome() {
     })
   }
 
+  const isNavigating = !!pendingHref
+
   return (
     <nav className="sticky top-0 z-40 bg-white dark:bg-slate-800 border-b border-stone-200 dark:border-slate-700 shadow-sm">
+      {/* Top progress bar — shows while navigating */}
+      <div className="absolute top-0 left-0 right-0 h-0.5 overflow-hidden pointer-events-none">
+        <div
+          className="h-full bg-emerald-500 transition-all duration-300 ease-out"
+          style={{
+            width: isNavigating ? '75%' : '0%',
+            opacity: isNavigating ? 1 : 0,
+            transitionProperty: isNavigating ? 'width' : 'opacity',
+            transitionDuration: isNavigating ? '8s' : '0.3s',
+          }}
+        />
+      </div>
+
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-14">
           {/* Logo */}
@@ -77,17 +98,24 @@ export function AppChrome() {
           <div className="hidden sm:flex items-center gap-1">
             {navLinks.map(link => {
               const isActive = pathname === link.href
+              const isPending = pendingHref === link.href
               return (
                 <Link
                   key={link.href}
                   href={link.href}
+                  onClick={() => { if (!isActive) setPendingHref(link.href) }}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                     isActive
                       ? 'bg-accent-subtle text-accent-strong'
                       : 'text-slate-600 dark:text-slate-400 hover:bg-stone-50 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-slate-200'
                   }`}
                 >
-                  {link.icon}
+                  {isPending ? (
+                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                    </svg>
+                  ) : link.icon}
                   {link.label}
                 </Link>
               )
@@ -119,17 +147,24 @@ export function AppChrome() {
         <div className="sm:hidden flex items-center gap-1 pb-2 overflow-x-auto">
           {navLinks.map(link => {
             const isActive = pathname === link.href
+            const isPending = pendingHref === link.href
             return (
               <Link
                 key={link.href}
                 href={link.href}
+                onClick={() => { if (!isActive) setPendingHref(link.href) }}
                 className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
                   isActive
                     ? 'bg-accent-subtle text-accent-strong'
                     : 'text-slate-600 dark:text-slate-400 hover:bg-stone-50 dark:hover:bg-slate-700'
                 }`}
               >
-                {link.icon}
+                {isPending ? (
+                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                  </svg>
+                ) : link.icon}
                 {link.label}
               </Link>
             )
