@@ -1,70 +1,51 @@
 'use client'
 
-import { useState, useEffect, useContext } from 'react'
+import { useState } from 'react'
+import useSWR from 'swr'
 import { RouteGate } from '../../components/RouteGate.js'
 import { BookGrid } from '../../components/BookGrid.js'
 import { BookCard } from '../../components/BookCard.js'
-import { AuthContext } from '../../components/AuthProvider.js'
+import { useAuth } from '../../components/AuthProvider.js'
 import { useToast } from '../../components/Toast.js'
 import { apiFetch } from '../../lib/api.js'
-import { pickupLibraryBook, reserveLibraryBook, returnLibraryBook } from '../../lib/library.js'
+import { fetcher } from '../../lib/fetcher.js'
+import { pickupLibraryBook, reserveLibraryBook } from '../../lib/library.js'
 
 function LibraryContent() {
-  const { profile } = useContext(AuthContext)
+  const { profile } = useAuth()
   const { toast } = useToast()
-
-  const [books, setBooks] = useState([])
-  const [libraries, setLibraries] = useState([])
   const [selectedLibrary, setSelectedLibrary] = useState(null)
-  const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    loadLibraryData()
-  }, [])
+  const { data: books, isLoading: booksLoading, mutate: mutateBooks } = useSWR('/books?source=library', fetcher)
+  const { data: libraries, isLoading: libsLoading } = useSWR('/library', fetcher, {
+    onSuccess: (data) => {
+      if (data?.length > 0 && !selectedLibrary) setSelectedLibrary(data[0].id)
+    },
+  })
 
-  async function loadLibraryData() {
-    setLoading(true)
-    try {
-      const [booksData, libsData] = await Promise.all([
-        apiFetch('/books?source=library'),
-        apiFetch('/library'),
-      ])
-      setBooks(booksData)
-      setLibraries(libsData)
-      if (libsData.length > 0) setSelectedLibrary(libsData[0].id)
-    } catch (err) {
-      toast({ message: 'Failed to load library', type: 'error' })
-    } finally {
-      setLoading(false)
-    }
-  }
+  const loading = booksLoading || libsLoading
 
   async function handleAction({ type, book }) {
     try {
       if (type === 'pickup') {
         await pickupLibraryBook(book.id)
         toast({ message: 'Picked up! Enjoy your read.', type: 'success' })
-        loadLibraryData()
+        mutateBooks()
       } else if (type === 'reserve') {
         await reserveLibraryBook(book.id)
         toast({ message: 'Reserved! An admin will confirm your checkout.', type: 'success' })
-        loadLibraryData()
+        mutateBooks()
       } else if (type === 'save' || type === 'unsave') {
         await apiFetch(type === 'save' ? '/saved' : `/saved/${book.id}`, {
           method: type === 'save' ? 'POST' : 'DELETE',
           body: type === 'save' ? JSON.stringify({ book_id: book.id, catalog_id: book.catalog.id }) : undefined,
         })
-        loadLibraryData()
+        mutateBooks()
       }
     } catch (err) {
       toast({ message: err.message || 'Action failed', type: 'error' })
     }
   }
-
-  const currentLib = libraries.find(l => l.id === selectedLibrary)
-  const visibleBooks = selectedLibrary
-    ? books.filter(b => b.library_id === selectedLibrary)
-    : books
 
   if (loading) {
     return (
@@ -73,6 +54,11 @@ function LibraryContent() {
       </div>
     )
   }
+
+  const currentLib = libraries.find(l => l.id === selectedLibrary)
+  const visibleBooks = selectedLibrary
+    ? books.filter(b => b.library_id === selectedLibrary)
+    : books
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
